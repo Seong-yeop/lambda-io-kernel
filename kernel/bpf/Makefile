@@ -36,3 +36,5 @@ obj-$(CONFIG_BPF_SYSCALL) += bpf_struct_ops.o
 obj-${CONFIG_BPF_LSM} += bpf_lsm.o
 endif
 obj-$(CONFIG_BPF_PRELOAD) += preload/
+# yz add
+obj-$(CONFIG_BPF_SYSCALL) += lambda_io.o

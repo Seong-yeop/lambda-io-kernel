@@ -34,6 +34,8 @@
 #include <linux/log2.h>
 #include <asm/unaligned.h>
 
+#define lio_pr(...)
+
 /* Registers */
 #define BPF_R0	regs[BPF_REG_0]
 #define BPF_R1	regs[BPF_REG_1]
@@ -1801,6 +1803,10 @@ struct bpf_prog *bpf_prog_select_runtime(struct bpf_prog *fp, int *err)
 	if (fp->bpf_func)
 		goto finalize;
 
+	if (fp->aux) {
+		lio_pr(info, "prog_name=%s", fp->aux->name);
+	}
+	
 	bpf_prog_select_func(fp);
 
 	/* eBPF JITs can rewrite the program in case constant
@@ -1811,6 +1817,7 @@ struct bpf_prog *bpf_prog_select_runtime(struct bpf_prog *fp, int *err)
 	 */
 	if (!bpf_prog_is_dev_bound(fp->aux)) {
 		*err = bpf_prog_alloc_jited_linfo(fp);
+		lio_pr(info, "err=%d", *err);
 		if (*err)
 			return fp;
 
@@ -1819,6 +1826,8 @@ struct bpf_prog *bpf_prog_select_runtime(struct bpf_prog *fp, int *err)
 			bpf_prog_free_jited_linfo(fp);
 #ifdef CONFIG_BPF_JIT_ALWAYS_ON
 			*err = -ENOTSUPP;
+			lio_pr(info, "err=%d", *err);
+
 			return fp;
 #endif
 		} else {
@@ -1839,6 +1848,7 @@ finalize:
 	 * all eBPF JITs might immediately support all features.
 	 */
 	*err = bpf_check_tail_call(fp);
+	lio_pr(info, "err=%d", *err);
 
 	return fp;
 }

@@ -24,6 +24,7 @@
 
 #include "nvme.h"
 #include "fabrics.h"
+#include "lio.h"
 
 #define CREATE_TRACE_POINTS
 #include "trace.h"
@@ -965,7 +966,9 @@ static void *nvme_add_user_metadata(struct bio *bio, void __user *ubuf,
 		goto out;
 
 	ret = -EFAULT;
-	if (write && copy_from_user(buf, ubuf, len))
+	// yz copy anyway
+	// if (write && copy_from_user(buf, ubuf, len))
+	if (copy_from_user(buf, ubuf, len))
 		goto out_free_meta;
 
 	bip = bio_integrity_alloc(bio, GFP_KERNEL, 1);
@@ -1074,6 +1077,7 @@ void nvme_execute_passthru_rq(struct request *rq)
 }
 EXPORT_SYMBOL_NS_GPL(nvme_execute_passthru_rq, NVME_TARGET_PASSTHRU);
 
+
 static int nvme_submit_user_cmd(struct request_queue *q,
 		struct nvme_command *cmd, void __user *ubuffer,
 		unsigned bufflen, void __user *meta_buffer, unsigned meta_len,
@@ -1104,6 +1108,7 @@ static int nvme_submit_user_cmd(struct request_queue *q,
 		if (disk && meta_buffer && meta_len) {
 			meta = nvme_add_user_metadata(bio, meta_buffer, meta_len,
 					meta_seed, write);
+			// pr_err("meta=%px\n", meta);
 			if (IS_ERR(meta)) {
 				ret = PTR_ERR(meta);
 				goto out_unmap;
@@ -1113,13 +1118,16 @@ static int nvme_submit_user_cmd(struct request_queue *q,
 	}
 
 	nvme_execute_passthru_rq(req);
+
 	if (nvme_req(req)->flags & NVME_REQ_CANCELLED)
 		ret = -EINTR;
 	else
 		ret = nvme_req(req)->status;
 	if (result)
 		*result = le64_to_cpu(nvme_req(req)->result.u64);
-	if (meta && !ret && !write) {
+	// if (meta && !ret && !write) {
+	// yz copy anyway
+	if (meta && !ret) {
 		if (copy_to_user(meta_buffer, meta, meta_len))
 			ret = -EFAULT;
 	}
@@ -1703,6 +1711,152 @@ static int nvme_handle_ctrl_ioctl(struct nvme_ns *ns, unsigned int cmd,
 	nvme_put_ctrl(ctrl);
 	return ret;
 }
+
+static void *nvme_add_kern_metadata(struct bio *bio, void *buf,
+		unsigned len, u32 seed, bool write)
+{
+	struct bio_integrity_payload *bip;
+	int ret = -ENOMEM;
+
+	ret = -EFAULT;
+
+	bip = bio_integrity_alloc(bio, GFP_KERNEL, 1);
+	if (IS_ERR(bip)) {
+		ret = PTR_ERR(bip);
+		goto out_free_meta;
+	}
+
+	bip->bip_iter.bi_size = len;
+	bip->bip_iter.bi_sector = seed;
+	ret = bio_integrity_add_page(bio, virt_to_page(buf), len,
+			offset_in_page(buf));
+	if (ret == len)
+		return buf;
+	ret = -ENOMEM;
+out_free_meta:
+	return ERR_PTR(ret);
+}
+
+static int nvme_submit_kern_cmd(struct request_queue *q,
+		struct nvme_command *cmd, void *buffer,
+		unsigned bufflen, void *meta_buffer, unsigned meta_len,
+		u32 meta_seed, u64 *result, unsigned timeout)
+{
+	bool write = nvme_is_write(cmd);
+	struct nvme_ns *ns = q->queuedata;
+	struct gendisk *disk = ns ? ns->disk : NULL;
+	struct request *req;
+	struct bio *bio = NULL;
+	void *meta = NULL;
+	int ret;
+
+	req = nvme_alloc_request(q, cmd, 0, NVME_QID_ANY);
+	if (IS_ERR(req)) {
+		lio_pr("err=%ld", PTR_ERR(req));
+		return PTR_ERR(req);
+	}
+
+
+	req->timeout = timeout ? timeout : ADMIN_TIMEOUT;
+	// nvme_req(req)->flags |= NVME_REQ_USERCMD;
+
+	// lio_pr();
+
+	if (buffer && bufflen) {
+		ret = blk_rq_map_kern(q, req, buffer, bufflen,
+				GFP_KERNEL);
+		if (ret) {
+			lio_pr("ret=%d", ret);
+			goto out;
+		}
+		bio = req->bio;
+		bio->bi_disk = disk;
+		if (disk && meta_buffer && meta_len) {
+			meta = nvme_add_kern_metadata(bio, meta_buffer, meta_len,
+					meta_seed, write);
+			// pr_err("meta=%px\n", meta);
+			if (IS_ERR(meta)) {
+				ret = PTR_ERR(meta);
+				lio_pr("ret=%d", ret);
+				goto out;
+			}
+			req->cmd_flags |= REQ_INTEGRITY;
+		}
+	}
+
+	nvme_execute_passthru_rq(req);
+
+	if (nvme_req(req)->flags & NVME_REQ_CANCELLED)
+		ret = -EINTR;
+	else
+		ret = nvme_req(req)->status;
+	if (result)
+		*result = le64_to_cpu(nvme_req(req)->result.u64);
+ out:
+	blk_mq_free_request(req);
+	if (ret) {
+		lio_pr("ret=%d", ret);
+	}
+	return ret;
+}
+
+static int nvme_kern_cmd(struct nvme_ctrl *ctrl, struct nvme_ns *ns,
+			struct nvme_passthru_cmd *cmd)
+{
+	struct nvme_command c;
+	unsigned timeout = 0;
+	u64 result;
+	int status;
+
+	if (cmd->flags) {
+		lio_pr("");
+		return -EINVAL;
+	}
+
+	memset(&c, 0, sizeof(c));
+	c.common.opcode = cmd->opcode;
+	c.common.flags = cmd->flags;
+	c.common.nsid = cpu_to_le32(cmd->nsid);
+	c.common.cdw2[0] = cpu_to_le32(cmd->cdw2);
+	c.common.cdw2[1] = cpu_to_le32(cmd->cdw3);
+	c.common.cdw10 = cpu_to_le32(cmd->cdw10);
+	c.common.cdw11 = cpu_to_le32(cmd->cdw11);
+	c.common.cdw12 = cpu_to_le32(cmd->cdw12);
+	c.common.cdw13 = cpu_to_le32(cmd->cdw13);
+	c.common.cdw14 = cpu_to_le32(cmd->cdw14);
+	c.common.cdw15 = cpu_to_le32(cmd->cdw15);
+
+	if (cmd->timeout_ms)
+		timeout = msecs_to_jiffies(cmd->timeout_ms);
+
+	status = nvme_submit_kern_cmd(ns ? ns->queue : ctrl->admin_q, &c,
+			(void *)cmd->addr, cmd->data_len,
+			(void *)cmd->metadata, cmd->metadata_len,
+			0, &result, timeout);
+
+	if (status) {
+		lio_pr("status=%d", status);
+	}
+	return status;
+}
+
+int nvme_submit_passthru_cmd_sync(struct block_device *bdev, 
+	struct nvme_passthru_cmd *cmd)
+{
+	struct nvme_ns_head *head = NULL;
+	struct nvme_ns *ns;
+	int srcu_idx, ret;
+
+	ns = nvme_get_ns_from_disk(bdev->bd_disk, &head, &srcu_idx);
+	if (unlikely(!ns))
+		return -EWOULDBLOCK;
+
+	ret = nvme_kern_cmd(ns->ctrl, ns, cmd);
+
+	nvme_put_ns_from_disk(head, srcu_idx);
+	return ret;
+}
+EXPORT_SYMBOL(nvme_submit_passthru_cmd_sync);
 
 static int nvme_ioctl(struct block_device *bdev, fmode_t mode,
 		unsigned int cmd, unsigned long arg)

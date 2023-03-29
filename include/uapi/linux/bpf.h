@@ -199,6 +199,8 @@ enum bpf_prog_type {
 	BPF_PROG_TYPE_EXT,
 	BPF_PROG_TYPE_LSM,
 	BPF_PROG_TYPE_SK_LOOKUP,
+	// yz add
+	BPF_PROG_TYPE_LAMBDA_IO,
 };
 
 enum bpf_attach_type {
@@ -3900,6 +3902,13 @@ union bpf_attr {
 	FN(per_cpu_ptr),		\
 	FN(this_cpu_ptr),		\
 	FN(redirect_peer),		\
+	FN(helper_memcpy),\
+	FN(malloc), \
+    FN(free),                  \
+    FN(mem_read),              \
+    FN(mem_write) ,                          \
+	FN(memcmp) ,                          \
+	FN(memset),
 	/* */
 
 /* integer value in 'imm' field of BPF_CALL instruction selects which helper

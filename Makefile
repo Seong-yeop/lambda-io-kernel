@@ -2,7 +2,7 @@
 VERSION = 5
 PATCHLEVEL = 10
 SUBLEVEL = 21
-EXTRAVERSION =
+EXTRAVERSION = -lambda-io
 NAME = Dare mighty things
 
 # *DOCUMENTATION*

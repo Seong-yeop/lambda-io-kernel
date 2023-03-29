@@ -2200,6 +2200,11 @@ ssize_t generic_file_buffered_read(struct kiocb *iocb,
 	unsigned long offset;      /* offset into pagecache page */
 	unsigned int prev_offset;
 	int error = 0;
+	bool is_kmap = iocb->ki_flags & IOCB_KMAP;
+
+	// if (is_kmap) {
+	// 	pr_info("iocb->ki_flags=0x%x\n", iocb->ki_flags);
+	// }
 
 	if (unlikely(*ppos >= inode->i_sb->s_maxbytes))
 		return 0;
@@ -2341,13 +2346,25 @@ page_ok:
 		 * now we can copy it to user space...
 		 */
 
-		ret = copy_page_to_iter(page, offset, nr, iter);
+		// yz 
+		if (is_kmap) {
+			// fake copy
+			// pr_info("is_kmap=%u, idx=%lu, ref=%d\n", is_kmap, index, page_count(page));
+			iov_iter_advance(iter, nr);
+			ret = nr;
+		} else {
+			ret = copy_page_to_iter(page, offset, nr, iter);
+		}
+		
 		offset += ret;
 		index += offset >> PAGE_SHIFT;
 		offset &= ~PAGE_MASK;
 		prev_offset = offset;
 
-		put_page(page);
+		// yz add. get the page!
+		if (!is_kmap) {
+			put_page(page);
+		}
 		written += ret;
 		if (!iov_iter_count(iter))
 			goto out;

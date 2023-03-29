@@ -25,6 +25,11 @@
 
 #include "disasm.h"
 
+#undef lio_pr
+#define lio_pr(...)
+
+extern bool enable_bpf_check;
+
 static const struct bpf_verifier_ops * const bpf_verifier_ops[] = {
 #define BPF_PROG_TYPE(_id, _name, prog_ctx_type, kern_ctx_type) \
 	[_id] = & _name ## _verifier_ops,
@@ -932,6 +937,10 @@ static int pop_stack(struct bpf_verifier_env *env, int *prev_insn_idx,
 	struct bpf_verifier_stack_elem *elem, *head = env->head;
 	int err;
 
+	#define check_null(int_ptr) ((int_ptr) == NULL ? -1 : *(int_ptr))
+	lio_pr(info, "insn_idx[]=%d->%d", check_null(prev_insn_idx), check_null(insn_idx));
+	#undef check_null
+
 	if (env->head == NULL)
 		return -ENOENT;
 
@@ -961,6 +970,11 @@ static struct bpf_verifier_state *push_stack(struct bpf_verifier_env *env,
 	struct bpf_verifier_state *cur = env->cur_state;
 	struct bpf_verifier_stack_elem *elem;
 	int err;
+
+	lio_pr(info, "insn_idx[]=%d->%d", prev_insn_idx, insn_idx);
+	if (prev_insn_idx < insn_idx) {
+		
+	}
 
 	elem = kzalloc(sizeof(struct bpf_verifier_stack_elem), GFP_KERNEL);
 	if (!elem)
@@ -1444,7 +1458,6 @@ static int find_subprog(struct bpf_verifier_env *env, int off)
 	if (!p)
 		return -ENOENT;
 	return p - env->subprog_info;
-
 }
 
 static int add_subprog(struct bpf_verifier_env *env, int off)
@@ -1525,8 +1538,9 @@ static int check_subprogs(struct bpf_verifier_env *env)
 			goto next;
 		off = i + insn[i].off + 1;
 		if (off < subprog_start || off >= subprog_end) {
-			verbose(env, "jump out of range from insn %d to %d\n", i, off);
-			return -EINVAL;
+			// yz
+			verbose(env, "jump out of range from insn %d to %d, bypass\n", i, off);
+			// return -EINVAL;
 		}
 next:
 		if (i == subprog_end - 1) {
@@ -1537,7 +1551,9 @@ next:
 			if (code != (BPF_JMP | BPF_EXIT) &&
 			    code != (BPF_JMP | BPF_JA)) {
 				verbose(env, "last insn is not an exit or jmp\n");
-				return -EINVAL;
+				// yz add: bypass
+				lio_pr(info, "bypass");
+				// return -EINVAL;
 			}
 			subprog_start = subprog_end;
 			cur_subprog++;
@@ -1734,7 +1750,9 @@ static int check_reg_arg(struct bpf_verifier_env *env, u32 regno,
 		/* check whether register used as source operand can be read */
 		if (reg->type == NOT_INIT) {
 			verbose(env, "R%d !read_ok\n", regno);
-			return -EACCES;
+			// yz add
+			return 0;
+			// return -EACCES;
 		}
 		/* We don't need to worry about FP liveness because it's read-only */
 		if (regno == BPF_REG_FP)
@@ -2508,6 +2526,7 @@ static int check_stack_access(struct bpf_verifier_env *env,
 	 * can determine what type of data were returned. See
 	 * check_stack_read().
 	 */
+
 	if (!tnum_is_const(reg->var_off)) {
 		char tn_buf[48];
 
@@ -3139,6 +3158,9 @@ int check_ctx_reg(struct bpf_verifier_env *env,
 	 * its original, unmodified form.
 	 */
 
+	// yz add
+	return 0;
+
 	if (reg->off) {
 		verbose(env, "dereference of modified ctx ptr R%d off=%d disallowed\n",
 			regno, reg->off);
@@ -3409,6 +3431,9 @@ static int check_mem_access(struct bpf_verifier_env *env, int insn_idx, u32 regn
 	struct bpf_func_state *state;
 	int size, err = 0;
 
+	lio_pr(info, "insn_idx=%d, regno=%u, off=%d, bpf_size=%d, t=%d, value_regno=%d, strict_alignment_once=%d",
+		insn_idx, regno, off, bpf_size, t, value_regno, strict_alignment_once);
+
 	size = bpf_size_to_bytes(bpf_size);
 	if (size < 0)
 		return size;
@@ -3503,7 +3528,6 @@ static int check_mem_access(struct bpf_verifier_env *env, int insn_idx, u32 regn
 			}
 			regs[value_regno].type = reg_type;
 		}
-
 	} else if (reg->type == PTR_TO_STACK) {
 		off += reg->var_off.value;
 		err = check_stack_access(env, reg, off, size);
@@ -3585,7 +3609,12 @@ static int check_mem_access(struct bpf_verifier_env *env, int insn_idx, u32 regn
 	} else {
 		verbose(env, "R%d invalid mem access '%s'\n", regno,
 			reg_type_str[reg->type]);
-		return -EACCES;
+		// yz add
+		lio_pr(info, "R%d invalid mem access '%s'", regno,
+			reg_type_str[reg->type]);
+		if (enable_bpf_check) {
+			// return -EACCES;
+		}
 	}
 
 	if (!err && size < BPF_REG_SIZE && value_regno >= 0 && t == BPF_READ &&
@@ -5150,6 +5179,7 @@ static int check_helper_call(struct bpf_verifier_env *env, int func_id, int insn
 		mark_reg_known_zero(env, regs, BPF_REG_0);
 		regs[BPF_REG_0].type = PTR_TO_MEM_OR_NULL;
 		regs[BPF_REG_0].mem_size = meta.mem_size;
+		lio_pr(info, "mem_size=%u", meta.mem_size);
 	} else if (fn->ret_type == RET_PTR_TO_MEM_OR_BTF_ID_OR_NULL ||
 		   fn->ret_type == RET_PTR_TO_MEM_OR_BTF_ID) {
 		const struct btf_type *t;
@@ -5311,6 +5341,8 @@ static bool check_reg_sane_offset(struct bpf_verifier_env *env,
 	if (smin == S64_MIN) {
 		verbose(env, "math between %s pointer and register with unbounded min value is not allowed\n",
 			reg_type_str[type]);
+		// yz add
+		return true;
 		return false;
 	}
 
@@ -5439,6 +5471,7 @@ do_sim:
 		tmp = *dst_reg;
 		*dst_reg = *ptr_reg;
 	}
+	lio_pr(info, "");
 	ret = push_stack(env, env->insn_idx + 1, env->insn_idx, true);
 	if (!ptr_is_dst_reg && ret)
 		*dst_reg = tmp;
@@ -5663,12 +5696,16 @@ static int adjust_ptr_min_max_vals(struct bpf_verifier_env *env,
 		/* bitwise ops on pointers are troublesome, prohibit. */
 		verbose(env, "R%d bitwise operator %s on pointer prohibited\n",
 			dst, bpf_alu_string[opcode >> 4]);
-		return -EACCES;
+			// yz
+		// return -EACCES;
+		break;
 	default:
 		/* other operators (e.g. MUL,LSH) produce non-pointer results */
 		verbose(env, "R%d pointer arithmetic with %s operator prohibited\n",
 			dst, bpf_alu_string[opcode >> 4]);
-		return -EACCES;
+		// yz add
+		lio_pr(info, "bypass");
+		// return -EACCES;
 	}
 
 	if (!check_reg_sane_offset(env, dst_reg, ptr_reg->type))
@@ -6477,7 +6514,9 @@ static int adjust_reg_min_max_vals(struct bpf_verifier_env *env,
 				verbose(env, "R%d pointer %s pointer prohibited\n",
 					insn->dst_reg,
 					bpf_alu_string[opcode >> 4]);
-				return -EACCES;
+				// yz 
+				return 0;
+				// return -EACCES;
 			} else {
 				/* scalar += pointer
 				 * This is legal, but we have to reverse our
@@ -7501,6 +7540,8 @@ static int check_cond_jmp_op(struct bpf_verifier_env *env,
 				       is_jmp32);
 	}
 
+	lio_pr(info, "pred=%d", pred);
+
 	if (pred >= 0) {
 		/* If we get here with a dst_reg pointer type it is because
 		 * above is_branch_taken() special cased the 0 comparison.
@@ -7523,6 +7564,19 @@ static int check_cond_jmp_op(struct bpf_verifier_env *env,
 		return 0;
 	}
 
+	// yz add
+	// if (insn->off < 0) {
+	// 	// ignore go-back branch
+	// 	// trust loops!
+	// 	lio_pr(info, "insn->off=%d, return 0", insn->off);
+	// 	return 0;
+	// }
+
+	lio_pr(info, "");
+	/* static struct bpf_verifier_state *push_stack(struct bpf_verifier_env *env,
+					     int insn_idx, int prev_insn_idx,
+					     bool speculative)
+	*/
 	other_branch = push_stack(env, *insn_idx + insn->off + 1, *insn_idx,
 				  false);
 	if (!other_branch)
@@ -7982,7 +8036,7 @@ static int push_insn(int t, int w, int e, struct bpf_verifier_env *env,
 
 	if (w < 0 || w >= env->prog->len) {
 		verbose_linfo(env, t, "%d: ", t);
-		verbose(env, "jump out of range from insn %d to %d\n", t, w);
+		verbose(env, "jump out of range from insn %d to %d, env->prog->len=%d\n", t, w, env->prog->len);
 		return -EINVAL;
 	}
 
@@ -8000,6 +8054,8 @@ static int push_insn(int t, int w, int e, struct bpf_verifier_env *env,
 		return 1;
 	} else if ((insn_state[w] & 0xF0) == DISCOVERED) {
 		if (loop_ok && env->bpf_capable)
+			return 0;
+			// yz
 			return 0;
 		verbose_linfo(env, t, "%d: ", t);
 		verbose_linfo(env, w, "%d: ", w);
@@ -8855,17 +8911,28 @@ static bool states_equal(struct bpf_verifier_env *env,
 {
 	int i;
 
+	lio_pr(info, "");
+	// yz add begin
+	if (old->insn_idx == cur->insn_idx) {
+		lio_pr(info, "insn_idx=%d", old->insn_idx);
+		return true;
+	}
+	// yz add end
+
 	if (old->curframe != cur->curframe)
 		return false;
+	lio_pr(info, "");
 
 	/* Verification state from speculative execution simulation
 	 * must never prune a non-speculative execution one.
 	 */
 	if (old->speculative && !cur->speculative)
 		return false;
+	lio_pr(info, "");
 
 	if (old->active_spin_lock != cur->active_spin_lock)
 		return false;
+	lio_pr(info, "");
 
 	/* for states to be equal callsites have to be the same
 	 * and all frame states need to be equivalent
@@ -9024,7 +9091,19 @@ static int is_state_visited(struct bpf_verifier_env *env, int insn_idx)
 	struct bpf_verifier_state_list *sl, **pprev;
 	struct bpf_verifier_state *cur = env->cur_state, *new;
 	int i, j, err, states_cnt = 0;
+	// yz add
+	bool *visited_flag = &env->visited_bitmap[insn_idx];
 	bool add_new_state = env->test_state_freq ? true : false;
+
+	// yz add begin: only check whether the insn has been checked.
+	lio_pr(info, "visited_state[%d]=%d", insn_idx, *visited_flag);
+	if (*visited_flag == false) {
+		*visited_flag = true;
+		return 0;
+	} else {
+		return 1;
+	}
+	// yz add end
 
 	cur->last_insn_idx = env->prev_insn_idx;
 	if (!env->insn_aux_data[insn_idx].prune_point)
@@ -9277,16 +9356,22 @@ static int do_check(struct bpf_verifier_env *env)
 		u8 class;
 		int err;
 
+		// yz add
+		lio_pr(info, "");
 		env->prev_insn_idx = prev_insn_idx;
 		if (env->insn_idx >= insn_cnt) {
 			verbose(env, "invalid insn idx %d insn_cnt %d\n",
 				env->insn_idx, insn_cnt);
 			return -EFAULT;
 		}
+		lio_pr(info, "env->insn_idx=%d", env->insn_idx);
 
 		insn = &insns[env->insn_idx];
 		class = BPF_CLASS(insn->code);
+		lio_pr(info, "class=%u", class);
 
+		// yz add
+		// lio_prog_pr(info, "env->insn_processed=%u", env_prog_name(env), env->insn_processed);
 		if (++env->insn_processed > BPF_COMPLEXITY_LIMIT_INSNS) {
 			verbose(env,
 				"BPF program is too large. Processed %d insn\n",
@@ -9294,10 +9379,14 @@ static int do_check(struct bpf_verifier_env *env)
 			return -E2BIG;
 		}
 
+		lio_pr(info, "env->insn_processed=%d", env->insn_processed);
+
 		err = is_state_visited(env, env->insn_idx);
 		if (err < 0)
 			return err;
+		lio_pr(info, "err=%d", err);
 		if (err == 1) {
+			lio_pr(info, "");
 			/* found equivalent state, can prune the search */
 			if (env->log.level & BPF_LOG_LEVEL) {
 				if (do_print_state)
@@ -9316,6 +9405,7 @@ static int do_check(struct bpf_verifier_env *env)
 
 		if (need_resched())
 			cond_resched();
+		lio_pr(info, "");
 
 		if (env->log.level & BPF_LOG_LEVEL2 ||
 		    (env->log.level & BPF_LOG_LEVEL && do_print_state)) {
@@ -9329,6 +9419,7 @@ static int do_check(struct bpf_verifier_env *env)
 			print_verifier_state(env, state->frame[state->curframe]);
 			do_print_state = false;
 		}
+		lio_pr(info, "");
 
 		if (env->log.level & BPF_LOG_LEVEL) {
 			const struct bpf_insn_cbs cbs = {
@@ -9340,6 +9431,7 @@ static int do_check(struct bpf_verifier_env *env)
 			verbose(env, "%d: ", env->insn_idx);
 			print_bpf_insn(&cbs, insn, env->allow_ptr_leaks);
 		}
+		lio_pr(info, "");
 
 		if (bpf_prog_is_dev_bound(env->prog->aux)) {
 			err = bpf_prog_offload_verify_insn(env, env->insn_idx,
@@ -9347,10 +9439,12 @@ static int do_check(struct bpf_verifier_env *env)
 			if (err)
 				return err;
 		}
+		lio_pr(info, "");
 
 		regs = cur_regs(env);
 		env->insn_aux_data[env->insn_idx].seen = env->pass_cnt;
 		prev_insn_idx = env->insn_idx;
+		lio_pr(info, "");
 
 		if (class == BPF_ALU || class == BPF_ALU64) {
 			err = check_alu_op(env, insn);
@@ -9411,6 +9505,8 @@ static int do_check(struct bpf_verifier_env *env)
 				if (err)
 					return err;
 				env->insn_idx++;
+				lio_pr(info, "");
+
 				continue;
 			}
 
@@ -9503,10 +9599,12 @@ static int do_check(struct bpf_verifier_env *env)
 					verbose(env, "BPF_JA uses reserved fields\n");
 					return -EINVAL;
 				}
-
-				env->insn_idx += insn->off + 1;
-				continue;
-
+				// yz add, only check forward jumps loop
+				// if (insn->off > 0) {
+					env->insn_idx += insn->off + 1;
+					lio_pr(info, "");
+					continue;
+				// }
 			} else if (opcode == BPF_EXIT) {
 				if (BPF_SRC(insn->code) != BPF_K ||
 				    insn->imm != 0 ||
@@ -9528,6 +9626,7 @@ static int do_check(struct bpf_verifier_env *env)
 					if (err)
 						return err;
 					do_print_state = true;
+					lio_pr(info, "");
 					continue;
 				}
 
@@ -9540,8 +9639,14 @@ static int do_check(struct bpf_verifier_env *env)
 					return err;
 process_bpf_exit:
 				update_branch_counts(env, env->cur_state);
+
 				err = pop_stack(env, &prev_insn_idx,
 						&env->insn_idx, pop_log);
+
+				lio_pr(info, "insn_idx[]=%d->%d", prev_insn_idx, env->insn_idx);
+
+				lio_pr(info, "err=%d", err);
+
 				if (err < 0) {
 					if (err != -ENOENT)
 						return err;
@@ -9551,7 +9656,9 @@ process_bpf_exit:
 					continue;
 				}
 			} else {
+				lio_pr(info, "insn_idx=%d", env->insn_idx);
 				err = check_cond_jmp_op(env, insn, &env->insn_idx);
+				lio_pr(info, "insn_idx=%d, err=%d", env->insn_idx, err);
 				if (err)
 					return err;
 			}
@@ -9579,6 +9686,7 @@ process_bpf_exit:
 			return -EINVAL;
 		}
 
+		lio_pr(info, "");
 		env->insn_idx++;
 	}
 
@@ -11286,7 +11394,10 @@ static int do_check_common(struct bpf_verifier_env *env, int subprog)
 			subprog);
 
 	regs = state->frame[state->curframe]->regs;
+	lio_pr(info, "subprog=%d", subprog);
+
 	if (subprog || env->prog->type == BPF_PROG_TYPE_EXT) {
+		lio_pr(info, "subprog=%d", subprog);
 		ret = btf_prepare_func_args(env, subprog, regs);
 		if (ret)
 			goto out;
@@ -11355,8 +11466,10 @@ static int do_check_subprogs(struct bpf_verifier_env *env)
 	struct bpf_prog_aux *aux = env->prog->aux;
 	int i, ret;
 
+	lio_pr(info, "");
 	if (!aux->func_info)
 		return 0;
+	lio_pr(info, "subprog_cnt=%u", env->subprog_cnt);
 
 	for (i = 1; i < env->subprog_cnt; i++) {
 		if (aux->func_info_aux[i].linkage != BTF_FUNC_GLOBAL)
@@ -11841,6 +11954,16 @@ int bpf_check(struct bpf_prog **prog, union bpf_attr *attr,
 	log = &env->log;
 
 	len = (*prog)->len;
+
+	// yz add begin
+	env->visited_bitmap = kvzalloc(len, GFP_KERNEL);
+	if (!env->visited_bitmap) {
+		kfree(env);
+		return -ENOMEM;
+	}
+	lio_pr(info, "prog->len=%d", (*prog)->len);
+	// yz add end
+
 	env->insn_aux_data =
 		vzalloc(array_size(sizeof(struct bpf_insn_aux_data), len));
 	ret = -ENOMEM;
@@ -11873,12 +11996,16 @@ int bpf_check(struct bpf_prog **prog, union bpf_attr *attr,
 			goto err_unlock;
 	}
 
+	lio_pr(info, "env->prog->len=%d", env->prog->len);
+
+
 	if (IS_ERR(btf_vmlinux)) {
 		/* Either gcc or pahole or kernel are broken. */
 		verbose(env, "in-kernel BTF is malformed\n");
 		ret = PTR_ERR(btf_vmlinux);
 		goto skip_full_check;
 	}
+	lio_pr(info, "env->prog->len=%d", env->prog->len);
 
 	env->strict_alignment = !!(attr->prog_flags & BPF_F_STRICT_ALIGNMENT);
 	if (!IS_ENABLED(CONFIG_HAVE_EFFICIENT_UNALIGNED_ACCESS))
@@ -11891,6 +12018,7 @@ int bpf_check(struct bpf_prog **prog, union bpf_attr *attr,
 	env->bypass_spec_v1 = bpf_bypass_spec_v1();
 	env->bypass_spec_v4 = bpf_bypass_spec_v4();
 	env->bpf_capable = bpf_capable();
+	lio_pr(info, "env->prog->len=%d", env->prog->len);
 
 	if (is_priv)
 		env->test_state_freq = attr->prog_flags & BPF_F_TEST_STATE_FREQ;
@@ -11900,6 +12028,7 @@ int bpf_check(struct bpf_prog **prog, union bpf_attr *attr,
 		if (ret)
 			goto skip_full_check;
 	}
+	lio_pr(info, "env->prog->len=%d", env->prog->len);
 
 	env->explored_states = kvcalloc(state_htab_size(env),
 				       sizeof(struct bpf_verifier_state_list *),
@@ -11907,70 +12036,102 @@ int bpf_check(struct bpf_prog **prog, union bpf_attr *attr,
 	ret = -ENOMEM;
 	if (!env->explored_states)
 		goto skip_full_check;
+	lio_pr(info, "env->prog->len=%d", env->prog->len);
 
 	ret = check_subprogs(env);
 	if (ret < 0)
 		goto skip_full_check;
+	lio_pr(info, "env->prog->len=%d", env->prog->len);
 
 	ret = check_btf_info(env, attr, uattr);
 	if (ret < 0)
 		goto skip_full_check;
+	lio_pr(info, "env->prog->len=%d", env->prog->len);
 
 	ret = check_attach_btf_id(env);
 	if (ret)
 		goto skip_full_check;
+	lio_pr(info, "env->prog->len=%d", env->prog->len);
 
 	ret = resolve_pseudo_ldimm64(env);
 	if (ret < 0)
 		goto skip_full_check;
+	lio_pr(info, "env->prog->len=%d", env->prog->len);
 
 	ret = check_cfg(env);
 	if (ret < 0)
 		goto skip_full_check;
+	lio_pr(info, "env->prog->len=%d", env->prog->len);
 
 	ret = do_check_subprogs(env);
 	ret = ret ?: do_check_main(env);
 
+	lio_pr(info, "ret=%d", ret);
+
 	if (ret == 0 && bpf_prog_is_dev_bound(env->prog->aux))
 		ret = bpf_prog_offload_finalize(env);
+	lio_pr(info, "env->prog->len=%d", env->prog->len);
 
 skip_full_check:
 	kvfree(env->explored_states);
-
+	lio_pr(info, "env->prog->len=%d", env->prog->len);
+	
+	// yz add
+	lio_pr(info, "ret=%d", ret);
 	if (ret == 0)
 		ret = check_max_stack_depth(env);
 
 	/* instruction rewrites happen after this point */
+	// yz add: disable these rewrites
+	/*
 	if (is_priv) {
 		if (ret == 0)
 			opt_hard_wire_dead_code_branches(env);
+	lio_pr(info, "env->prog->len=%d", env->prog->len);
 		if (ret == 0)
 			ret = opt_remove_dead_code(env);
+	lio_pr(info, "env->prog->len=%d", env->prog->len);
+			lio_pr(info, "ret=%d", ret);
 		if (ret == 0)
 			ret = opt_remove_nops(env);
+	lio_pr(info, "env->prog->len=%d", env->prog->len);
+			lio_pr(info, "ret=%d", ret);
 	} else {
 		if (ret == 0)
+	lio_pr(info, "env->prog->len=%d", env->prog->len);
 			sanitize_dead_code(env);
 	}
+	*/
+	lio_pr(info, "env->prog->len=%d", env->prog->len);
+
+	lio_pr(info, "ret=%d", ret);
 
 	if (ret == 0)
 		/* program is valid, convert *(u32*)(ctx + off) accesses */
 		ret = convert_ctx_accesses(env);
+	lio_pr(info, "ret=%d", ret);
+	lio_pr(info, "env->prog->len=%d", env->prog->len);
+
 
 	if (ret == 0)
 		ret = fixup_bpf_calls(env);
+	lio_pr(info, "ret=%d", ret);
+	lio_pr(info, "env->prog->len=%d", env->prog->len);
 
 	/* do 32-bit optimization after insn patching has done so those patched
 	 * insns could be handled correctly.
 	 */
 	if (ret == 0 && !bpf_prog_is_dev_bound(env->prog->aux)) {
 		ret = opt_subreg_zext_lo32_rnd_hi32(env, attr);
+		lio_pr(info, "ret=%d", ret);
+
 		env->prog->aux->verifier_zext = bpf_jit_needs_zext() ? !ret
 								     : false;
 	}
 
 	if (ret == 0)
 		ret = fixup_call_args(env);
+	lio_pr(info, "ret=%d", ret);
 
 	env->verification_time = ktime_get_ns() - start_time;
 	print_verification_stats(env);
@@ -12025,6 +12186,9 @@ err_unlock:
 		mutex_unlock(&bpf_verifier_lock);
 	vfree(env->insn_aux_data);
 err_free_env:
+// yz add begin
+	kvfree(env->visited_bitmap);
+// yz add end
 	kfree(env);
 	return ret;
 }

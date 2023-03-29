@@ -87,6 +87,7 @@ static int load_and_attach(const char *event, struct bpf_insn *prog, int size)
 	bool is_sockops = strncmp(event, "sockops", 7) == 0;
 	bool is_sk_skb = strncmp(event, "sk_skb", 6) == 0;
 	bool is_sk_msg = strncmp(event, "sk_msg", 6) == 0;
+	bool is_lambda_io = strncmp(event, "lambda_io", 9) == 0;
 	size_t insns_cnt = size / sizeof(struct bpf_insn);
 	enum bpf_prog_type prog_type;
 	char buf[256];
@@ -120,6 +121,8 @@ static int load_and_attach(const char *event, struct bpf_insn *prog, int size)
 		prog_type = BPF_PROG_TYPE_SK_SKB;
 	} else if (is_sk_msg) {
 		prog_type = BPF_PROG_TYPE_SK_MSG;
+	} else if (is_lambda_io) {
+		prog_type = BPF_PROG_TYPE_LAMBDA_IO;
 	} else {
 		printf("Unknown event '%s'\n", event);
 		return -1;
@@ -136,6 +139,10 @@ static int load_and_attach(const char *event, struct bpf_insn *prog, int size)
 	}
 
 	prog_fd[prog_cnt++] = fd;
+
+	if (is_lambda_io) {
+		return 0;
+	}
 
 	if (is_xdp || is_perf_event || is_cgroup_skb || is_cgroup_sk)
 		return 0;
@@ -526,6 +533,7 @@ static int do_load_bpf_file(const char *path, fixup_map_cb fixup_map)
 	fd = open(path, O_RDONLY, 0);
 	if (fd < 0)
 		return 1;
+	printf("open(%s) as fd=%d\n", path, fd);
 
 	elf = elf_begin(fd, ELF_C_READ, NULL);
 
@@ -643,7 +651,9 @@ static int do_load_bpf_file(const char *path, fixup_map_cb fixup_map)
 		    memcmp(shname, "cgroup/", 7) == 0 ||
 		    memcmp(shname, "sockops", 7) == 0 ||
 		    memcmp(shname, "sk_skb", 6) == 0 ||
-		    memcmp(shname, "sk_msg", 6) == 0) {
+		    memcmp(shname, "sk_msg", 6) == 0 ||
+			memcmp(shname, "lambda_io", 9) == 0
+			) {
 			ret = load_and_attach(shname, data->d_buf,
 					      data->d_size);
 			if (ret != 0)

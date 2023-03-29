@@ -5133,6 +5133,7 @@ int btf_check_func_arg_match(struct bpf_verifier_env *env, int subprog,
 	u32 i, nargs, btf_id;
 	const char *tname;
 
+
 	if (!prog->aux->func_info)
 		return -EINVAL;
 

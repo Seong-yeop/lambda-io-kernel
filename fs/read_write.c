@@ -25,6 +25,9 @@
 #include <linux/uaccess.h>
 #include <asm/unistd.h>
 
+// yz
+#include <linux/vmalloc.h>
+
 const struct file_operations generic_ro_fops = {
 	.llseek		= generic_file_llseek,
 	.read_iter	= generic_file_read_iter,
@@ -472,6 +475,135 @@ ssize_t kernel_read(struct file *file, void *buf, size_t count, loff_t *pos)
 	return __kernel_read(file, buf, count, pos);
 }
 EXPORT_SYMBOL(kernel_read);
+
+/* taken from f2fs */
+#define MAX_VMAP_RETRIES	3
+
+static void *f2fs_vmap(struct page **pages, unsigned int count)
+{
+	int i;
+	void *buf = NULL;
+
+	for (i = 0; i < MAX_VMAP_RETRIES; i++) {
+		buf = vm_map_ram(pages, count, -1);
+		if (buf)
+			break;
+		vm_unmap_aliases();
+	}
+	return buf;
+}
+
+
+void *__kernel_mmap(struct file *file, size_t count, loff_t *pos)
+{
+	// vec: a memory slice
+	struct kvec iov = {
+		.iov_base	= NULL,
+		.iov_len	= min_t(size_t, count, MAX_RW_COUNT),
+	};
+	struct kiocb kiocb;
+	struct iov_iter iter;
+	ssize_t ret;
+	unsigned nr_pages;
+	struct page **pages;
+	unsigned page_array_size;
+	pgoff_t start_index, last_index;
+	void *vaddr;
+
+	if (WARN_ON_ONCE(!(file->f_mode & FMODE_READ)))
+		return ERR_PTR(-EINVAL);
+	if (!(file->f_mode & FMODE_CAN_READ))
+		return ERR_PTR(-EINVAL);
+
+	/*
+	 * Also fail if ->read_iter and ->read are both wired up as that
+	 * implies very convoluted semantics.
+	 */
+	if (unlikely(!file->f_op->read_iter || file->f_op->read))
+		return ERR_PTR(warn_unsupported(file, "read"));
+
+	init_sync_kiocb(&kiocb, file);
+	kiocb.ki_flags |= IOCB_KMAP;
+	kiocb.ki_pos = pos ? *pos : 0;
+	iov_iter_kvec(&iter, READ, &iov, 1, iov.iov_len);
+
+	start_index = kiocb.ki_pos >> PAGE_SHIFT;
+	last_index = (kiocb.ki_pos + count - 1) >> PAGE_SHIFT;
+	nr_pages = last_index - start_index + 1;
+	page_array_size = sizeof(struct page *) * nr_pages;
+	pages = kzalloc(page_array_size, GFP_NOFS);
+	if (!pages) {
+		return ERR_PTR(-ENOMEM);
+	}
+
+	// pr_info("pos=%llu, start_index=%lu, last_index=%lu, nr_pages=%u\n",
+	// 	kiocb.ki_pos, start_index, last_index, nr_pages);
+
+	ret = file->f_op->read_iter(&kiocb, &iter);
+	if (ret > 0) {
+		if (pos)
+			*pos = kiocb.ki_pos;
+		fsnotify_access(file);
+		add_rchar(current, ret);
+	}
+	inc_syscr(current);
+
+	if (ret < 0) {
+		kfree(pages);
+		return ERR_PTR(ret);
+	}
+	
+	// refcount ++
+	ret = find_get_pages_contig(file->f_mapping, start_index, nr_pages, pages);
+	if (ret != nr_pages) {
+		pr_err("expected nr_pages=%u, found=%u\n",
+			nr_pages, (unsigned)ret);
+		vaddr = ERR_PTR(-EINVAL);
+		goto out;
+	}
+
+	vaddr = f2fs_vmap(pages, nr_pages);
+	
+out:
+	kfree(pages);
+	return vaddr;
+}
+
+void *kernel_mmap(struct file *file, size_t count, loff_t pos)
+{
+	ssize_t ret = rw_verify_area(READ, file, &pos, count);
+	if (ret) {
+		return ERR_PTR(ret);
+	}
+
+	if (!PAGE_ALIGNED(pos) || !PAGE_ALIGNED(count)) {
+		return ERR_PTR(-EINVAL);
+	}
+	return __kernel_mmap(file, count, &pos);
+}
+EXPORT_SYMBOL(kernel_mmap);
+
+void kernel_munmap(struct file *file, size_t count, loff_t pos, void *vaddr)
+{
+	pgoff_t start_index, last_index, i;
+	unsigned nr_pages;
+
+	start_index = pos >> PAGE_SHIFT;
+	last_index = (pos + count - 1) >> PAGE_SHIFT;
+	nr_pages = last_index - start_index + 1;
+
+	vm_unmap_ram(vaddr, nr_pages);
+
+	// we need to put pages as we got them since generic_file_buffered_read
+	for (i = start_index; i <= last_index; i++) {
+		struct page *page = find_get_page(file->f_mapping, i);
+		// pr_info("idx=%lu, ref_count=%d\n", i, page_count(page));
+		put_page(page); // for find_get_page
+		put_page(page); // for find_get_pages_contig
+		put_page(page); // for read_iter
+	}
+}
+EXPORT_SYMBOL(kernel_munmap);
 
 ssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)
 {

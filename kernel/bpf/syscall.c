@@ -32,6 +32,9 @@
 #include <linux/bpf-netns.h>
 #include <linux/rcupdate_trace.h>
 
+#undef lio_pr
+#define lio_pr(...)
+
 #define IS_FD_ARRAY(map) ((map)->map_type == BPF_MAP_TYPE_PERF_EVENT_ARRAY || \
 			  (map)->map_type == BPF_MAP_TYPE_CGROUP_ARRAY || \
 			  (map)->map_type == BPF_MAP_TYPE_ARRAY_OF_MAPS)
@@ -2104,6 +2107,7 @@ static int bpf_prog_load(union bpf_attr *attr, union bpf_attr __user *uattr)
 	char license[128];
 	bool is_gpl;
 
+	lio_pr(info, "prog_name=%s, prog_type=%u", attr->prog_name, attr->prog_type);
 	if (CHECK_ATTR(BPF_PROG_LOAD))
 		return -EINVAL;
 
@@ -2206,16 +2210,20 @@ static int bpf_prog_load(union bpf_attr *attr, union bpf_attr __user *uattr)
 	if (err < 0)
 		goto free_prog;
 
+	lio_pr(info, "prog->len=%d", prog->len);
 	/* run eBPF verifier */
 	err = bpf_check(&prog, attr, uattr);
+	lio_pr(info, "prog->len=%d, err=%d", prog->len, err);
 	if (err < 0)
 		goto free_used_maps;
 
 	prog = bpf_prog_select_runtime(prog, &err);
+	lio_pr(info, "prog->len=%d, err=%d", prog->len, err);
 	if (err < 0)
 		goto free_used_maps;
 
 	err = bpf_prog_alloc_id(prog);
+	lio_pr(info, "err=%d", err);
 	if (err)
 		goto free_used_maps;
 
@@ -2238,8 +2246,10 @@ static int bpf_prog_load(union bpf_attr *attr, union bpf_attr __user *uattr)
 	bpf_audit_prog(prog, BPF_AUDIT_LOAD);
 
 	err = bpf_prog_new_fd(prog);
+	lio_pr(info, "err=%d", err);
 	if (err < 0)
 		bpf_prog_put(prog);
+
 	return err;
 
 free_used_maps:
